@@ -4,11 +4,11 @@ import com.abran.lightsuppression.LightSuppressionManager;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import com.llamalad7.mixinextras.sugar.Local;
-import net.minecraft.block.BlockState;
-import net.minecraft.server.world.ServerWorld;
-import net.minecraft.util.math.BlockPos;
-import net.minecraft.world.BlockView;
-import net.minecraft.world.chunk.ChunkProvider;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.core.BlockPos;
+import net.minecraft.world.level.BlockGetter;
+import net.minecraft.world.level.chunk.LightChunkGetter;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
@@ -19,20 +19,20 @@ public class ScalableLuxStarLightEngineMixin {
 
     @Shadow
     @Final
-    protected BlockPos.Mutable mutablePos1;
+    protected BlockPos.MutableBlockPos mutablePos1;
 
     @WrapOperation(
             method = "performLightDecrease",
-            at = @At(value = "INVOKE", target = "Lnet/minecraft/block/BlockState;getLuminance()I"),
+            at = @At(value = "INVOKE", target = "Lnet/minecraft/world/level/block/state/BlockState;getLightEmission()I"),
             require = 0
     )
     private int wrapDecreaseEmission(BlockState state, Operation<Integer> original,
-            @Local(argsOnly = true, ordinal = 0) ChunkProvider lightAccess) {
+            @Local(argsOnly = true, ordinal = 0) LightChunkGetter lightAccess) {
         int emission = original.call(state);
         if (emission <= 0) return emission;
-        BlockView world = lightAccess.getWorld();
-        if (world instanceof ServerWorld serverWorld) {
-            if (LightSuppressionManager.get(serverWorld).isSuppressed(
+        BlockGetter world = lightAccess.getLevel();
+        if (world instanceof ServerLevel serverLevel) {
+            if (LightSuppressionManager.get(serverLevel).isSuppressed(
                     new BlockPos(mutablePos1.getX(), mutablePos1.getY(), mutablePos1.getZ()))) {
                 return 0;
             }

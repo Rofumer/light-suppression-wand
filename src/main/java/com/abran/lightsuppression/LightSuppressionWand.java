@@ -4,23 +4,22 @@ import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.fabricmc.fabric.api.event.player.UseBlockCallback;
 import net.fabricmc.fabric.api.networking.v1.PlayerLookup;
-import net.minecraft.block.BlockState;
-import net.minecraft.item.Items;
-import net.minecraft.network.packet.s2c.play.LightUpdateS2CPacket;
-import net.minecraft.particle.ParticleTypes;
-import net.minecraft.server.network.ServerPlayerEntity;
-import net.minecraft.server.world.ServerLightingProvider;
-import net.minecraft.server.world.ServerWorld;
-import net.minecraft.sound.SoundCategory;
-import net.minecraft.sound.SoundEvents;
-import net.minecraft.text.Text;
-import net.minecraft.util.ActionResult;
-import net.minecraft.util.Formatting;
-import net.minecraft.util.Hand;
-import net.minecraft.util.math.BlockPos;
-import net.minecraft.util.math.ChunkPos;
-import net.minecraft.util.math.ChunkSectionPos;
-import net.minecraft.world.LightType;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.item.Items;
+import net.minecraft.network.protocol.game.ClientboundLightUpdatePacket;
+import net.minecraft.core.particles.ParticleTypes;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.server.level.ThreadedLevelLightEngine;
+import net.minecraft.sounds.SoundSource;
+import net.minecraft.sounds.SoundEvents;
+import net.minecraft.network.chat.Component;
+import net.minecraft.ChatFormatting;
+import net.minecraft.world.InteractionResult;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.core.BlockPos;
+import net.minecraft.world.level.ChunkPos;
+import net.minecraft.core.SectionPos;
 
 import java.util.BitSet;
 
@@ -28,49 +27,49 @@ public class LightSuppressionWand implements ModInitializer {
     @Override
     public void onInitialize() {
         UseBlockCallback.EVENT.register((player, world, hand, hitResult) -> {
-            if (world.isClient()) return ActionResult.PASS;
-            if (!player.isSneaking()) return ActionResult.PASS;
-            if (hand != Hand.MAIN_HAND) return ActionResult.PASS;
-            if (!player.getStackInHand(hand).isOf(Items.GOLDEN_HOE)) return ActionResult.PASS;
+            if (world.isClientSide()) return InteractionResult.PASS;
+            if (!player.isShiftKeyDown()) return InteractionResult.PASS;
+            if (hand != InteractionHand.MAIN_HAND) return InteractionResult.PASS;
+            if (player.getItemInHand(hand).getItem() != Items.GOLDEN_HOE) return InteractionResult.PASS;
 
-            ServerWorld serverWorld = (ServerWorld) world;
+            ServerLevel serverLevel = (ServerLevel) world;
             BlockPos pos = hitResult.getBlockPos();
             BlockState state = world.getBlockState(pos);
 
-            LightSuppressionManager manager = LightSuppressionManager.get(serverWorld);
+            LightSuppressionManager manager = LightSuppressionManager.get(serverLevel);
 
             // Allow toggle if block emits light OR is already suppressed
-            if (state.getLuminance() == 0 && !manager.isSuppressed(pos)) {
-                return ActionResult.PASS;
+            if (state.getLightEmission() == 0 && !manager.isSuppressed(pos)) {
+                return InteractionResult.PASS;
             }
 
             boolean suppressed = manager.toggle(pos);
 
             // Force light recalculation and sync to clients
-            serverWorld.getChunkManager().getLightingProvider().checkBlock(pos);
-            sendLightUpdate(serverWorld, pos);
+            serverLevel.getChunkSource().getLightEngine().checkBlock(pos);
+            sendLightUpdate(serverLevel, pos);
 
             // Feedback
             if (suppressed) {
-                player.sendMessage(Text.literal("Light Suppressed!").formatted(Formatting.GOLD), true);
-                serverWorld.playSound(null, pos, SoundEvents.BLOCK_BEACON_DEACTIVATE, SoundCategory.BLOCKS, 1.0f, 1.0f);
+                player.sendOverlayMessage(Component.literal("Light Suppressed!").withStyle(ChatFormatting.GOLD));
+                serverLevel.playSound(null, pos, SoundEvents.BEACON_DEACTIVATE, SoundSource.BLOCKS, 1.0f, 1.0f);
             } else {
-                player.sendMessage(Text.literal("Light Restored!").formatted(Formatting.GREEN), true);
-                serverWorld.playSound(null, pos, SoundEvents.BLOCK_BEACON_ACTIVATE, SoundCategory.BLOCKS, 1.0f, 1.0f);
+                player.sendOverlayMessage(Component.literal("Light Restored!").withStyle(ChatFormatting.GREEN));
+                serverLevel.playSound(null, pos, SoundEvents.BEACON_ACTIVATE, SoundSource.BLOCKS, 1.0f, 1.0f);
             }
-            serverWorld.spawnParticles(ParticleTypes.END_ROD,
+            serverLevel.sendParticles(ParticleTypes.END_ROD,
                     pos.getX() + 0.5, pos.getY() + 0.5, pos.getZ() + 0.5,
                     10, 0.3, 0.3, 0.3, 0.05);
 
-            return ActionResult.SUCCESS;
+            return InteractionResult.SUCCESS;
         });
 
         // Re-apply suppressions after world load (handles chunk lighting on restart)
-        ServerTickEvents.END_WORLD_TICK.register(world -> {
+        ServerTickEvents.END_LEVEL_TICK.register(world -> {
             LightSuppressionManager manager = LightSuppressionManager.get(world);
             if (manager.needsRelight()) {
                 for (BlockPos pos : manager.getSuppressedPositions()) {
-                    world.getChunkManager().getLightingProvider().checkBlock(pos);
+                    world.getChunkSource().getLightEngine().checkBlock(pos);
                     sendLightUpdate(world, pos);
                 }
                 manager.clearNeedsRelight();
@@ -79,19 +78,20 @@ public class LightSuppressionWand implements ModInitializer {
     }
 
     /**
-     * After the light engine finishes recalculating, send a LightUpdateS2CPacket
-     * to all players tracking the chunk. Uses ServerLightingProvider.enqueue() to
-     * wait for the async light engine to finish processing.
+     * After the light engine finishes recalculating, send a ClientboundLightUpdatePacket
+     * to all players tracking the chunk. Uses ThreadedLevelLightEngine.waitForPendingTasks()
+     * to wait for the async light engine to finish processing.
      */
-    private static void sendLightUpdate(ServerWorld world, BlockPos pos) {
-        ServerLightingProvider lightingProvider = (ServerLightingProvider) world.getChunkManager().getLightingProvider();
+    private static void sendLightUpdate(ServerLevel world, BlockPos pos) {
+        ThreadedLevelLightEngine lightEngine =
+                (ThreadedLevelLightEngine) world.getChunkSource().getLightEngine();
         ChunkPos centerChunk = new ChunkPos(pos);
 
-        // enqueue() returns a future that completes after light engine POST_UPDATE
-        lightingProvider.enqueue(centerChunk.x, centerChunk.z).thenRun(() -> {
+        // waitForPendingTasks() returns a future that completes after light engine finishes
+        lightEngine.waitForPendingTasks(centerChunk.x, centerChunk.z).thenRun(() -> {
             world.getServer().execute(() -> {
-                int bottomSection = world.getBottomSectionCoord();
-                int blockSection = ChunkSectionPos.getSectionCoord(pos.getY());
+                int bottomSection = world.getMinSectionY();
+                int blockSection = SectionPos.blockToSectionCoord(pos.getY());
 
                 BitSet blockLightBits = new BitSet();
                 for (int dy = -1; dy <= 1; dy++) {
@@ -105,14 +105,14 @@ public class LightSuppressionWand implements ModInitializer {
                 for (int dx = -1; dx <= 1; dx++) {
                     for (int dz = -1; dz <= 1; dz++) {
                         ChunkPos chunkPos = new ChunkPos(centerChunk.x + dx, centerChunk.z + dz);
-                        LightUpdateS2CPacket packet = new LightUpdateS2CPacket(
-                                chunkPos, lightingProvider, null, blockLightBits
+                        ClientboundLightUpdatePacket packet = new ClientboundLightUpdatePacket(
+                                chunkPos, lightEngine, null, blockLightBits
                         );
                         BlockPos chunkCenter = new BlockPos(
-                                chunkPos.getStartX() + 8, pos.getY(), chunkPos.getStartZ() + 8
+                                chunkPos.getMinBlockX() + 8, pos.getY(), chunkPos.getMinBlockZ() + 8
                         );
-                        for (ServerPlayerEntity tracking : PlayerLookup.tracking(world, chunkCenter)) {
-                            tracking.networkHandler.sendPacket(packet);
+                        for (ServerPlayer tracking : PlayerLookup.tracking(world, chunkCenter)) {
+                            tracking.connection.send(packet);
                         }
                     }
                 }

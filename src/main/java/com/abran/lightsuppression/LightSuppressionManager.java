@@ -1,18 +1,19 @@
 package com.abran.lightsuppression;
 
 import com.mojang.serialization.Codec;
-import net.minecraft.datafixer.DataFixTypes;
-import net.minecraft.server.world.ServerWorld;
-import net.minecraft.util.math.BlockPos;
-import net.minecraft.world.PersistentState;
-import net.minecraft.world.PersistentStateType;
+import net.minecraft.resources.Identifier;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.core.BlockPos;
+import net.minecraft.world.level.saveddata.SavedData;
+import net.minecraft.world.level.saveddata.SavedDataType;
+import net.minecraft.util.datafix.DataFixTypes;
 
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
 
-public class LightSuppressionManager extends PersistentState {
+public class LightSuppressionManager extends SavedData {
     private final Set<BlockPos> suppressedPositions = new HashSet<>();
     private boolean needsRelight = false;
 
@@ -21,7 +22,7 @@ public class LightSuppressionManager extends PersistentState {
 
     private LightSuppressionManager(List<Long> positions) {
         for (long l : positions) {
-            suppressedPositions.add(BlockPos.fromLong(l));
+            suppressedPositions.add(BlockPos.of(l));
         }
         if (!suppressedPositions.isEmpty()) {
             needsRelight = true;
@@ -38,28 +39,28 @@ public class LightSuppressionManager extends PersistentState {
                             .collect(Collectors.toList())
             );
 
-    public static final PersistentStateType<LightSuppressionManager> TYPE = new PersistentStateType<>(
-            "light_suppression_wand",
+    public static final SavedDataType<LightSuppressionManager> TYPE = new SavedDataType<>(
+            Identifier.fromNamespaceAndPath("light_suppression_wand", "data"),
             LightSuppressionManager::new,
             CODEC,
             DataFixTypes.LEVEL
     );
 
-    public static LightSuppressionManager get(ServerWorld world) {
-        return world.getPersistentStateManager().getOrCreate(TYPE);
+    public static LightSuppressionManager get(ServerLevel world) {
+        return world.getDataStorage().computeIfAbsent(TYPE);
     }
 
     /**
      * @return true if now suppressed, false if now restored
      */
     public boolean toggle(BlockPos pos) {
-        pos = pos.toImmutable();
+        pos = pos.immutable();
         if (suppressedPositions.remove(pos)) {
-            markDirty();
+            setDirty();
             return false;
         } else {
             suppressedPositions.add(pos);
-            markDirty();
+            setDirty();
             return true;
         }
     }
@@ -69,8 +70,8 @@ public class LightSuppressionManager extends PersistentState {
     }
 
     public void remove(BlockPos pos) {
-        if (suppressedPositions.remove(pos.toImmutable())) {
-            markDirty();
+        if (suppressedPositions.remove(pos.immutable())) {
+            setDirty();
         }
     }
 
