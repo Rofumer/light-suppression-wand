@@ -85,10 +85,9 @@ public class LightSuppressionWand implements ModInitializer {
     private static void sendLightUpdate(ServerLevel world, BlockPos pos) {
         ThreadedLevelLightEngine lightEngine =
                 (ThreadedLevelLightEngine) world.getChunkSource().getLightEngine();
-        ChunkPos centerChunk = new ChunkPos(pos);
+        ChunkPos centerChunk = new ChunkPos(pos.getX() >> 4, pos.getZ() >> 4);
 
-        // waitForPendingTasks() returns a future that completes after light engine finishes
-        lightEngine.waitForPendingTasks(centerChunk.x, centerChunk.z).thenRun(() -> {
+        lightEngine.waitForPendingTasks(centerChunk.x(), centerChunk.z()).thenRun(() -> {
             world.getServer().execute(() -> {
                 int bottomSection = world.getMinSectionY();
                 int blockSection = SectionPos.blockToSectionCoord(pos.getY());
@@ -101,10 +100,9 @@ public class LightSuppressionWand implements ModInitializer {
                     }
                 }
 
-                // Send for 3x3 chunk area to cover cross-chunk light propagation
                 for (int dx = -1; dx <= 1; dx++) {
                     for (int dz = -1; dz <= 1; dz++) {
-                        ChunkPos chunkPos = new ChunkPos(centerChunk.x + dx, centerChunk.z + dz);
+                        ChunkPos chunkPos = new ChunkPos(centerChunk.x() + dx, centerChunk.z() + dz);
                         ClientboundLightUpdatePacket packet = new ClientboundLightUpdatePacket(
                                 chunkPos, lightEngine, null, blockLightBits
                         );
